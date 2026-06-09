@@ -1,15 +1,25 @@
 const express = require('express');
+const crypto = require('crypto');
 const app = express();
 app.use(express.json());
 
 // ========== ЕДИНАЯ БАЗА ДАННЫХ ==========
-// Все версии работают с этими данными
 let products = [
     { id: 1, name: "Ноутбук", price: 1000, inStock: true, created: "2024-01-01" },
     { id: 2, name: "Мышь", price: 20, inStock: true, created: "2024-01-02" },
     { id: 3, name: "Клавиатура", price: 50, inStock: false, created: "2024-01-03" }
 ];
 let nextId = 4;
+
+// ========== ПОЛЬЗОВАТЕЛИ И ТОКЕНЫ ==========
+const users = [
+    { id: 1, login: "admin", password: "admin123" },
+    { id: 2, login: "user", password: "user456" }
+];
+
+// Хранилище токенов: ключ — токен, значение — { userId, expiresAt }
+const tokens = new Map();
+const TOKEN_LIFETIME_MS = 60 * 60 * 1000; // 1 час
 
 // ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 function findProduct(id) {
@@ -20,14 +30,35 @@ function findProductIndex(id) {
     return products.findIndex(p => p.id === id);
 }
 
-// ========== V01 - ПРОСТАЯ ВЕРСИЯ (минимальные поля) ==========
+// Генерация нового токена
+function generateToken(userId) {
+    const token = crypto.randomUUID();
+    const expiresAt = Date.now() + TOKEN_LIFETIME_MS;
+    tokens.set(token, { userId, expiresAt });
+    return token;
+}
+
+// Middleware для проверки токена
+function requireAuth(req, res, next) {
+    const token = req.headers['x-auth-token'];
+    if (!token) {
+        return res.status(401).json({ error: "Unauthorized", message: "Missing x-auth-token header" });
+    }
+    const tokenData = tokens.get(token);
+    if (!tokenData) {
+        return res.status(401).json({ error: "Unauthorized", message: "Invalid token" });
+    }
+    if (Date.now() > tokenData.expiresAt) {
+        tokens.delete(token);
+        return res.status(401).json({ error: "Unauthorized", message: "Token expired" });
+    }
+    req.userId = tokenData.userId;
+    next();
+}
+
+// ========== V01 - БЕЗ АВТОРИЗАЦИИ (как было) ==========
 app.get('/v01/products/', (req, res) => {
-    // Возвращаем только id, name, price
-    const simplified = products.map(p => ({
-        id: p.id,
-        name: p.name,
-        price: p.price
-    }));
+    const simplified = products.map(p => ({ id: p.id, name: p.name, price: p.price }));
     res.json(simplified);
 });
 
@@ -35,12 +66,7 @@ app.get('/v01/products/:id', (req, res) => {
     const id = parseInt(req.params.id);
     const product = findProduct(id);
     if (product) {
-        // v01 возвращает только базовые поля
-        res.json({
-            id: product.id,
-            name: product.name,
-            price: product.price
-        });
+        res.json({ id: product.id, name: product.name, price: product.price });
     } else {
         res.status(404).json({ error: "Product not found" });
     }
@@ -69,14 +95,8 @@ app.put('/v01/products/:id', (req, res) => {
     const id = parseInt(req.params.id);
     const { name, price } = req.body;
     const index = findProductIndex(id);
-    
-    if (index === -1) {
-        return res.status(404).json({ error: "Product not found" });
-    }
-    if (!name || !price) {
-        return res.status(400).json({ error: "Missing name or price" });
-    }
-    
+    if (index === -1) return res.status(404).json({ error: "Product not found" });
+    if (!name || !price) return res.status(400).json({ error: "Missing name or price" });
     products[index] = { ...products[index], name, price, updated: new Date().toISOString() };
     res.json({ 
         message: "Product updated in v01", 
@@ -88,11 +108,7 @@ app.patch('/v01/products/:id', (req, res) => {
     const id = parseInt(req.params.id);
     const updates = req.body;
     const index = findProductIndex(id);
-    
-    if (index === -1) {
-        return res.status(404).json({ error: "Product not found" });
-    }
-    
+    if (index === -1) return res.status(404).json({ error: "Product not found" });
     products[index] = { ...products[index], ...updates, patched: new Date().toISOString() };
     res.json({ 
         message: "Product patched in v01", 
@@ -103,18 +119,13 @@ app.patch('/v01/products/:id', (req, res) => {
 app.delete('/v01/products/:id', (req, res) => {
     const id = parseInt(req.params.id);
     const index = findProductIndex(id);
-    
-    if (index === -1) {
-        return res.status(404).json({ error: "Product not found" });
-    }
-    
+    if (index === -1) return res.status(404).json({ error: "Product not found" });
     const deleted = products.splice(index, 1)[0];
     res.json({ message: "Product deleted", deletedProduct: { id: deleted.id, name: deleted.name } });
 });
 
-// ========== V02 - РАСШИРЕННАЯ ВЕРСИЯ (все поля) ==========
+// ========== V02 - ОТКРЫТЫЕ GET, ОСТАЛЬНЫЕ - ТОЛЬКО С ТОКЕНОМ ==========
 app.get('/v02/products/', (req, res) => {
-    // v02 возвращает все поля
     res.json(products);
 });
 
@@ -128,7 +139,19 @@ app.get('/v02/products/:id', (req, res) => {
     }
 });
 
-app.post('/v02/products/', (req, res) => {
+// Логин — возвращает токен
+app.post('/v02/login', (req, res) => {
+    const { login, password } = req.body;
+    const user = users.find(u => u.login === login && u.password === password);
+    if (!user) {
+        return res.status(401).json({ error: "Invalid credentials" });
+    }
+    const token = generateToken(user.id);
+    res.json({ token, expiresIn: TOKEN_LIFETIME_MS / 1000 + " seconds" });
+});
+
+// Защищённые методы (требуют токен)
+app.post('/v02/products/', requireAuth, (req, res) => {
     const { name, price, inStock } = req.body;
     if (!name || !price) {
         return res.status(400).json({ error: "Missing name or price" });
@@ -144,15 +167,11 @@ app.post('/v02/products/', (req, res) => {
     res.status(201).json({ message: "Product created in v02", product: newProduct });
 });
 
-app.put('/v02/products/:id', (req, res) => {
+app.put('/v02/products/:id', requireAuth, (req, res) => {
     const id = parseInt(req.params.id);
     const { name, price, inStock } = req.body;
     const index = findProductIndex(id);
-    
-    if (index === -1) {
-        return res.status(404).json({ error: "Product not found" });
-    }
-    
+    if (index === -1) return res.status(404).json({ error: "Product not found" });
     products[index] = { 
         ...products[index], 
         name: name || products[index].name,
@@ -163,14 +182,19 @@ app.put('/v02/products/:id', (req, res) => {
     res.json({ message: "Product updated in v02", product: products[index] });
 });
 
-app.delete('/v02/products/:id', (req, res) => {
+app.patch('/v02/products/:id', requireAuth, (req, res) => {
+    const id = parseInt(req.params.id);
+    const updates = req.body;
+    const index = findProductIndex(id);
+    if (index === -1) return res.status(404).json({ error: "Product not found" });
+    products[index] = { ...products[index], ...updates, patched: new Date().toISOString() };
+    res.json({ message: "Product patched in v02", product: products[index] });
+});
+
+app.delete('/v02/products/:id', requireAuth, (req, res) => {
     const id = parseInt(req.params.id);
     const index = findProductIndex(id);
-    
-    if (index === -1) {
-        return res.status(404).json({ error: "Product not found" });
-    }
-    
+    if (index === -1) return res.status(404). json({ error: "Product not found" });
     const deleted = products.splice(index, 1)[0];
     res.json({ message: "Product deleted from v02", deletedProduct: deleted });
 });
@@ -179,7 +203,7 @@ app.delete('/v02/products/:id', (req, res) => {
 app.get('/', (req, res) => {
     res.json({ 
         versions: ["v01", "v02"],
-        description: "Обе версии работают с одной базой данных",
+        description: "v01 – открытый API (без авторизации). v02 – GET открыты, для изменений требуется токен (получить через POST /v02/login).",
         endpoints: {
             v01: {
                 GET: ["/v01/products/", "/v01/products/:id"],
@@ -190,9 +214,11 @@ app.get('/', (req, res) => {
             },
             v02: {
                 GET: ["/v02/products/", "/v02/products/:id"],
-                POST: "/v02/products/",
-                PUT: "/v02/products/:id",
-                DELETE: "/v02/products/:id"
+                POST: "/v02/products/ (requires token)",
+                PUT: "/v02/products/:id (requires token)",
+                PATCH: "/v02/products/:id (requires token)",
+                DELETE: "/v02/products/:id (requires token)",
+                LOGIN: "POST /v02/login"
             }
         }
     });
