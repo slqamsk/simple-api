@@ -199,11 +199,98 @@ app.delete('/v02/products/:id', requireAuth, (req, res) => {
     res.json({ message: "Product deleted from v02", deletedProduct: deleted });
 });
 
+// ========== V03 - НОВАЯ ВЕРСИЯ С productId ВМЕСТО id ==========
+// Функция для преобразования product -> productId
+function convertToV03(product) {
+    if (!product) return null;
+    const { id, ...rest } = product;
+    return { productId: id, ...rest };
+}
+
+function convertArrayToV03(productsArray) {
+    return productsArray.map(p => convertToV03(p));
+}
+
+// V03 endpoints
+app.get('/v03/products/', (req, res) => {
+    res.json(convertArrayToV03(products));
+});
+
+app.get('/v03/products/:productId', (req, res) => {
+    const id = parseInt(req.params.productId);
+    const product = findProduct(id);
+    if (product) {
+        res.json(convertToV03(product));
+    } else {
+        res.status(404).json({ error: "Product not found" });
+    }
+});
+
+app.post('/v03/products/', requireAuth, (req, res) => {
+    const { name, price, inStock } = req.body;
+    if (!name || !price) {
+        return res.status(400).json({ error: "Missing name or price" });
+    }
+    const newProduct = { 
+        id: nextId++, 
+        name, 
+        price, 
+        inStock: inStock !== undefined ? inStock : true,
+        created: new Date().toISOString()
+    };
+    products.push(newProduct);
+    res.status(201).json({ 
+        message: "Product created in v03", 
+        product: convertToV03(newProduct) 
+    });
+});
+
+app.put('/v03/products/:productId', requireAuth, (req, res) => {
+    const id = parseInt(req.params.productId);
+    const { name, price, inStock } = req.body;
+    const index = findProductIndex(id);
+    if (index === -1) return res.status(404).json({ error: "Product not found" });
+    products[index] = { 
+        ...products[index], 
+        name: name || products[index].name,
+        price: price || products[index].price,
+        inStock: inStock !== undefined ? inStock : products[index].inStock,
+        updated: new Date().toISOString()
+    };
+    res.json({ 
+        message: "Product updated in v03", 
+        product: convertToV03(products[index]) 
+    });
+});
+
+app.patch('/v03/products/:productId', requireAuth, (req, res) => {
+    const id = parseInt(req.params.productId);
+    const updates = req.body;
+    const index = findProductIndex(id);
+    if (index === -1) return res.status(404).json({ error: "Product not found" });
+    products[index] = { ...products[index], ...updates, patched: new Date().toISOString() };
+    res.json({ 
+        message: "Product patched in v03", 
+        product: convertToV03(products[index]) 
+    });
+});
+
+app.delete('/v03/products/:productId', requireAuth, (req, res) => {
+    const id = parseInt(req.params.productId);
+    const index = findProductIndex(id);
+    if (index === -1) return res.status(404).json({ error: "Product not found" });
+    const deleted = products.splice(index, 1)[0];
+    res.json({ 
+        message: "Product deleted from v03", 
+        deletedProduct: convertToV03(deleted) 
+    });
+});
+
 // ========== КОРНЕВОЙ МАРШРУТ ==========
 app.get('/', (req, res) => {
     res.json({ 
-        versions: ["v01", "v02"],
-        description: "v01 – открытый API (без авторизации). v02 – GET открыты, для изменений требуется токен (получить через POST /v02/login).",
+        versions: ["v01", "v02", "v03"],
+        description: "v01 – открытый API (без авторизации). v02 – GET открыты, для изменений требуется токен. v03 – то же, что v02, но используется productId вместо id.",
         endpoints: {
             v01: {
                 GET: ["/v01/products/", "/v01/products/:id"],
@@ -219,6 +306,14 @@ app.get('/', (req, res) => {
                 PATCH: "/v02/products/:id (requires token)",
                 DELETE: "/v02/products/:id (requires token)",
                 LOGIN: "POST /v02/login"
+            },
+            v03: {
+                GET: ["/v03/products/", "/v03/products/:productId"],
+                POST: "/v03/products/ (requires token)",
+                PUT: "/v03/products/:productId (requires token)",
+                PATCH: "/v03/products/:productId (requires token)",
+                DELETE: "/v03/products/:productId (requires token)",
+                LOGIN: "POST /v02/login (same as v02)"
             }
         }
     });
