@@ -139,7 +139,7 @@ app.get('/v02/products/:id', (req, res) => {
     }
 });
 
-// Логин — возвращает токен
+// Логин v02 — возвращает токен
 app.post('/v02/login', (req, res) => {
     const { login, password } = req.body;
     const user = users.find(u => u.login === login && u.password === password);
@@ -210,6 +210,17 @@ function convertToV03(product) {
 function convertArrayToV03(productsArray) {
     return productsArray.map(p => convertToV03(p));
 }
+
+// Логин v03 — возвращает токен (отдельный маршрут)
+app.post('/v03/login', (req, res) => {
+    const { login, password } = req.body;
+    const user = users.find(u => u.login === login && u.password === password);
+    if (!user) {
+        return res.status(401).json({ error: "Invalid credentials" });
+    }
+    const token = generateToken(user.id);
+    res.json({ token, expiresIn: TOKEN_LIFETIME_MS / 1000 + " seconds" });
+});
 
 // V03 endpoints
 app.get('/v03/products/', (req, res) => {
@@ -313,7 +324,7 @@ app.get('/', (req, res) => {
                 PUT: "/v03/products/:productId (requires token)",
                 PATCH: "/v03/products/:productId (requires token)",
                 DELETE: "/v03/products/:productId (requires token)",
-                LOGIN: "POST /v02/login (same as v02)"
+                LOGIN: "POST /v03/login"
             }
         }
     });
